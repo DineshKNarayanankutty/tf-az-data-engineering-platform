@@ -1,11 +1,147 @@
+# ==========================================
+
+# Terraform
+
+# ==========================================
+
+# Local .terraform directories
+
 .terraform/
+
+# Terraform state files (VERY IMPORTANT)
+
 *.tfstate
 *.tfstate.*
-*.tfplan
-*.tfvars.json
+
+# Crash logs
+
 crash.log
-crash.*.log
+
+# Terraform plan output
+
+*.tfplan
+
+# Override files
+
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# Terraform lock file (KEEP THIS!)
+
+# Comment out if you want to ignore
+
+#!.terraform.lock.hcl
+
+# ==========================================
+
+# Environment / Sensitive Variables
+
+# ==========================================
+
+# Variable files (may contain secrets)
+
+*.tfvars
+*.tfvars.json
+
+# Exception: allow example files
+
+!*.example.tfvars
+!*.example.tfvars.json
+
+# ==========================================
+
+# Azure / CLI / Credentials
+
+# ==========================================
+
+# Azure CLI auth files (if any local exports)
+
+.azure/
+
+# Environment files
+
+.env
+.env.*
+
+# ==========================================
+
+# Databricks
+
+# ==========================================
+
+# Databricks CLI config
+
+.databrickscfg
+
+# Databricks bundle build artifacts
+
+.bundle/
+dist/
+build/
+
+# ==========================================
+
+# Python (if used for bundles / scripts)
+
+# ==========================================
+
+**pycache**/
+*.pyc
+*.pyo
+*.pyd
+
+.venv/
+venv/
+env/
+
+# ==========================================
+
+# Logs
+
+# ==========================================
+
+*.log
+
+# ==========================================
+
+# OS / Editor Files
+
+# ==========================================
+
+# Mac
+
+.DS_Store
+
+# Windows
+
+Thumbs.db
+
+# VS Code
+
+.vscode/
+
+# IntelliJ / PyCharm
+
+.idea/
+
+# ==========================================
+
+# CI/CD (optional local artifacts)
+
+# ==========================================
+
+# GitHub Actions artifacts (if any local testing)
+
+.github/workflows/*.local.yml
+
+# ==========================================
+
+# Misc
+
+# ==========================================
+
+*.bak
+*.tmp
+*.swp
