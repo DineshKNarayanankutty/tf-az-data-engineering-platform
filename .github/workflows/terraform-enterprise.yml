@@ -1,0 +1,115 @@
+name: Terraform Enterprise Deploy
+
+on:
+  pull_request:
+    branches: [main, staging, develop]
+    paths: ["envs/**", "modules/**", "backend-config/**", ".github/workflows/**"]
+  push:
+    branches: [main, staging, develop]
+    paths: ["envs/**", "modules/**", "backend-config/**", ".github/workflows/**"]
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Environment to deploy"
+        required: true
+        type: choice
+        options: [dev, staging, prod]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.8.5"
+  TF_IN_AUTOMATION: "true"
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  select-env:
+    runs-on: ubuntu-latest
+    outputs:
+      env_name: ${{ steps.setenv.outputs.env_name }}
+    steps:
+      - id: setenv
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "env_name=${{ github.event.inputs.target_environment }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "main" ]; then
+            echo "env_name=prod" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_name }}" = "staging" ]; then
+            echo "env_name=staging" >> "$GITHUB_OUTPUT"
+          else
+            echo "env_name=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    runs-on: ubuntu-latest
+    needs: select-env
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive
+      - name: Terraform init (no backend)
+        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} init -backend=false -input=false
+      - name: Terraform validate
+        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} validate
+
+  plan:
+    runs-on: ubuntu-latest
+    needs: [select-env, validate]
+    environment: ${{ needs.select-env.outputs.env_name }}-plan
+    concurrency:
+      group: terraform-plan-${{ needs.select-env.outputs.env_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Terraform init with env backend
+        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} init -backend-config=../../backend-config/${{ needs.select-env.outputs.env_name }}.hcl -reconfigure -input=false
+      - name: Terraform plan
+        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} plan -var-file=${{ needs.select-env.outputs.env_name }}.tfvars -out=tfplan -input=false -lock-timeout=5m
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ needs.select-env.outputs.env_name }}
+          path: envs/${{ needs.select-env.outputs.env_name }}/tfplan
+
+  apply:
+    runs-on: ubuntu-latest
+    needs: [select-env, plan]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    environment: ${{ needs.select-env.outputs.env_name }}-apply
+    concurrency:
+      group: terraform-apply-${{ needs.select-env.outputs.env_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.select-env.outputs.env_name }}
+          path: envs/${{ needs.select-env.outputs.env_name }}
+      - name: Terraform init with env backend
+        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} init -backend-config=../../backend-config/${{ needs.select-env.outputs.env_name }}.hcl -reconfigure -input=false
+      - name: Terraform apply
+        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} apply -auto-approve -input=false tfplan
