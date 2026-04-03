@@ -70,7 +70,14 @@ module "security" {
   storage_account_id  = module.storage.storage_account_id
   connector_name      = module.naming.names.dbw_connector
   adf_uami_name       = module.naming.names.adf_uami
-  tags                = module.naming.tags
+
+  # If Databricks auto-created an Access Connector in the managed RG,
+  # set these two variables in tfvars instead of leaving null.
+  # The module will data-source the existing connector rather than create a new one.
+  existing_databricks_access_connector_name                = var.existing_databricks_access_connector_name
+  existing_databricks_access_connector_resource_group_name = var.existing_databricks_access_connector_resource_group_name
+
+  tags = module.naming.tags
 }
 
 module "keyvault" {
@@ -114,21 +121,32 @@ module "databricks_unity" {
     databricks = databricks.workspace
   }
 
-  environment                   = var.environment
-  storage_account_name          = module.storage.storage_account_name
-  databricks_connector_id       = module.security.databricks_connector_id
-  catalog_name                  = "${var.project}_${var.environment}"
-  data_engineers_group          = var.data_engineers_group
-  data_readers_group            = var.data_readers_group
-  create_example_external_table = var.create_example_external_table
-  spark_version                 = var.spark_version
-  dev_node_type                 = var.dev_node_type
-  prod_node_type                = var.prod_node_type
-  pool_max_capacity             = var.pool_max_capacity
-  job_min_workers               = var.job_min_workers
-  job_max_workers               = var.job_max_workers
-  job_notebook_path             = var.job_notebook_path
-  tags                          = module.naming.tags
+  environment                     = var.environment
+  storage_account_name            = module.storage.storage_account_name
+  databricks_connector_id         = module.security.databricks_connector_id
+  catalog_name                    = "${var.project}_${var.environment}"
+  data_engineers_group            = var.data_engineers_group
+  data_readers_group              = var.data_readers_group
+  create_example_external_table   = var.create_example_external_table
+  spark_version                   = var.spark_version
+  dev_node_type                   = var.dev_node_type
+  prod_node_type                  = var.prod_node_type
+  pool_max_capacity               = var.pool_max_capacity
+  job_min_workers                 = var.job_min_workers
+  job_max_workers                 = var.job_max_workers
+  job_notebook_path               = var.job_notebook_path
+  tags                            = module.naming.tags
+
+  # Metastore + workspace binding (required for Unity Catalog)
+  metastore_id                    = var.metastore_id
+  databricks_workspace_numeric_id = module.databricks.workspace_numeric_id
+
+  # Dev single-node cluster: bind to this service principal / user
+  cluster_single_user_name        = var.cluster_single_user_name
+
+  # Pass RBAC propagation trigger so storage credential validation waits
+  # for all 4 role assignments to settle (avoids "File Events" test failure)
+  rbac_propagation_trigger        = module.security.rbac_propagation_trigger
 
   depends_on = [module.security, module.databricks, module.storage]
 }
@@ -148,6 +166,8 @@ module "adf" {
   databricks_cluster_node_type  = var.prod_node_type
   databricks_cluster_version    = var.spark_version
   databricks_cluster_workers    = var.adf_databricks_cluster_workers
+  storage_account_name          = module.storage.storage_account_name
+  environment_name              = var.environment
   private_endpoint_subnet_id    = module.networking.private_endpoint_subnet_id
   dns_zone_adf_id               = module.networking.dns_zone_adf_id
   log_analytics_workspace_id    = module.monitoring.log_analytics_workspace_id
