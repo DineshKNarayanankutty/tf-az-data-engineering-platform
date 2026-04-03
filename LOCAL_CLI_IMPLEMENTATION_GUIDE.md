@@ -243,14 +243,14 @@ terraform apply
 This should create:
 - Resource group for Terraform state
 - Storage account for remote state
-- Blob container for tfstate
+- Blob containers for `dev`, `stage`, and `prod`
 
 ### 9.4 Validate backend storage
 
 ```bash
 az storage account list --output table
 az storage container list \
-  --account-name tfstatedataplatform \
+  --account-name tfstatedataplatformdkn \
   --auth-mode login \
   --output table
 ```
@@ -261,14 +261,14 @@ If the container exists, backend bootstrap is complete.
 
 ## 10. Understand backend-per-environment
 
-Each environment uses a separate backend config file and a separate state key in Azure Blob Storage.
+Each environment uses a separate backend config file and a separate storage container in Azure Blob Storage.
 
 Expected pattern:
-- `backend-config/dev.hcl` → `key = dev.tfstate`
-- `backend-config/staging.hcl` → `key = staging.tfstate`
-- `backend-config/prod.hcl` → `key = prod.tfstate`
+- `backend-config/dev.hcl` → `container_name = dev`
+- `backend-config/stage.hcl` → `container_name = stage`
+- `backend-config/prod.hcl` → `container_name = prod`
 
-This separation is mandatory for safe enterprise operations because shared state across environments increases blast radius and complicates promotion. [file:1]
+Each backend config should set both `use_oidc = true` and `use_azuread_auth = true` so the backend uses Microsoft Entra ID instead of shared keys. [file:1]
 
 ---
 
