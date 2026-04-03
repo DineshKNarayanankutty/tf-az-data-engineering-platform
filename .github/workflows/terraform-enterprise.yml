@@ -3,10 +3,18 @@ name: Terraform Enterprise Deploy
 on:
   pull_request:
     branches: [main, staging, develop]
-    paths: ["envs/**", "modules/**", "backend-config/**", ".github/workflows/**"]
+    paths:
+      - "envs/**"
+      - "modules/**"
+      - "backend-config/**"
+      - ".github/workflows/**"
   push:
     branches: [main, staging, develop]
-    paths: ["envs/**", "modules/**", "backend-config/**", ".github/workflows/**"]
+    paths:
+      - "envs/**"
+      - "modules/**"
+      - "backend-config/**"
+      - ".github/workflows/**"
   workflow_dispatch:
     inputs:
       target_environment:
@@ -18,9 +26,10 @@ on:
 permissions:
   id-token: write
   contents: read
+  pull-requests: write  # Required for PR plan comments
 
 env:
-  TF_VERSION: "1.8.5"
+  TF_VERSION: "1.9.8"
   TF_IN_AUTOMATION: "true"
   ARM_USE_OIDC: "true"
   ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -28,6 +37,9 @@ env:
   ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
+  # -------------------------------------------------------------------------
+  # Determine target environment from branch or manual trigger
+  # -------------------------------------------------------------------------
   select-env:
     runs-on: ubuntu-latest
     outputs:
@@ -45,21 +57,56 @@ jobs:
             echo "env_name=dev" >> "$GITHUB_OUTPUT"
           fi
 
+  # -------------------------------------------------------------------------
+  # Format + Validate (no Azure auth needed)
+  # -------------------------------------------------------------------------
   validate:
     runs-on: ubuntu-latest
     needs: select-env
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-      - name: Terraform fmt
-        run: terraform fmt -check -recursive
-      - name: Terraform init (no backend)
-        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} init -backend=false -input=false
-      - name: Terraform validate
-        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} validate
 
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init (no backend — format/validate only)
+        run: |
+          terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} \
+            init -backend=false -input=false
+
+      - name: Terraform validate
+        run: |
+          terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} validate
+
+  # -------------------------------------------------------------------------
+  # Security scan with Checkov
+  # -------------------------------------------------------------------------
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: select-env
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov IaC scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: envs/${{ needs.select-env.outputs.env_name }}
+          framework: terraform
+          output_format: cli
+          # Soft-fail so scan results are visible without blocking deploys initially.
+          # Set to false once baseline is clean.
+          soft_fail: true
+          skip_check: >-
+            CKV_AZURE_33,
+            CKV_AZURE_35
+
+  # -------------------------------------------------------------------------
+  # Plan (requires Azure OIDC)
+  # -------------------------------------------------------------------------
   plan:
     runs-on: ubuntu-latest
     needs: [select-env, validate]
@@ -69,24 +116,71 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      - name: Terraform init with env backend
-        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} init -backend-config=../../backend-config/${{ needs.select-env.outputs.env_name }}.hcl -reconfigure -input=false
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} \
+            init \
+            -backend-config=../../backend-config/${{ needs.select-env.outputs.env_name }}.hcl \
+            -reconfigure \
+            -input=false
+
       - name: Terraform plan
-        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} plan -var-file=${{ needs.select-env.outputs.env_name }}.tfvars -out=tfplan -input=false -lock-timeout=5m
+        id: plan
+        run: |
+          terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} \
+            plan \
+            -var-file=${{ needs.select-env.outputs.env_name }}.tfvars \
+            -out=tfplan \
+            -input=false \
+            -lock-timeout=10m \
+            -detailed-exitcode 2>&1 | tee /tmp/plan_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        continue-on-error: true
+
+      - name: Post plan summary to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('/tmp/plan_output.txt', 'utf8');
+            const maxLen = 65000;
+            const truncated = plan.length > maxLen
+              ? plan.substring(0, maxLen) + '\n\n... (truncated)'
+              : plan;
+            const body = `## Terraform Plan — \`${{ needs.select-env.outputs.env_name }}\`\n\n<details><summary>Show Plan</summary>\n\n\`\`\`terraform\n${truncated}\n\`\`\`\n\n</details>`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+      - name: Fail if plan errored
+        if: steps.plan.outputs.exit_code == '1'
+        run: exit 1
+
       - name: Upload plan artifact
         uses: actions/upload-artifact@v4
         with:
           name: tfplan-${{ needs.select-env.outputs.env_name }}
           path: envs/${{ needs.select-env.outputs.env_name }}/tfplan
+          retention-days: 3
 
+  # -------------------------------------------------------------------------
+  # Apply (push to branch or manual trigger only — not on PR)
+  # -------------------------------------------------------------------------
   apply:
     runs-on: ubuntu-latest
     needs: [select-env, plan]
@@ -97,19 +191,42 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
+
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ needs.select-env.outputs.env_name }}
           path: envs/${{ needs.select-env.outputs.env_name }}
-      - name: Terraform init with env backend
-        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} init -backend-config=../../backend-config/${{ needs.select-env.outputs.env_name }}.hcl -reconfigure -input=false
+
+      # Re-init is required: the downloaded artifact only contains the plan file,
+      # not the .terraform/ provider cache. Init is fast on subsequent runs.
+      - name: Terraform init
+        run: |
+          terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} \
+            init \
+            -backend-config=../../backend-config/${{ needs.select-env.outputs.env_name }}.hcl \
+            -reconfigure \
+            -input=false
+
       - name: Terraform apply
-        run: terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} apply -auto-approve -input=false tfplan
+        run: |
+          terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} \
+            apply \
+            -auto-approve \
+            -input=false \
+            -lock-timeout=10m \
+            tfplan
+
+      - name: Terraform output summary
+        run: |
+          terraform -chdir=envs/${{ needs.select-env.outputs.env_name }} \
+            output -json 2>/dev/null | jq '.' || echo "No outputs defined"
