@@ -1,0 +1,54 @@
+{
+  "name": "pl_copy_to_bronze_then_databricks",
+  "properties": {
+    "parameters": {
+      "folderPath": { "type": "String", "defaultValue": "incoming" },
+      "fileName": { "type": "String", "defaultValue": "sample.csv" },
+      "environment": { "type": "String", "defaultValue": "dev" }
+    },
+    "activities": [
+      {
+        "name": "Copy_To_Bronze",
+        "type": "Copy",
+        "dependsOn": [],
+        "policy": { "timeout": "0.12:00:00", "retry": 2, "retryIntervalInSeconds": 30 },
+        "inputs": [{
+          "referenceName": "ds_adls_bronze_binary",
+          "type": "DatasetReference",
+          "parameters": {
+            "folderPath": "@pipeline().parameters.folderPath",
+            "fileName": "@pipeline().parameters.fileName"
+          }
+        }],
+        "outputs": [{
+          "referenceName": "ds_adls_bronze_binary",
+          "type": "DatasetReference",
+          "parameters": {
+            "folderPath": "@concat('raw/', formatDateTime(utcNow(),'yyyy/MM/dd'))",
+            "fileName": "@pipeline().parameters.fileName"
+          }
+        }],
+        "typeProperties": {
+          "source": { "type": "BinarySource" },
+          "sink": { "type": "BinarySink" }
+        }
+      },
+      {
+        "name": "Run_Databricks_Notebook",
+        "type": "DatabricksNotebook",
+        "dependsOn": [{ "activity": "Copy_To_Bronze", "dependencyConditions": ["Succeeded"] }],
+        "linkedServiceName": {
+          "referenceName": "ls_databricks_mi",
+          "type": "LinkedServiceReference"
+        },
+        "typeProperties": {
+          "notebookPath": "/Shared/pipelines/bronze_to_silver_gold",
+          "baseParameters": {
+            "environment": "@pipeline().parameters.environment",
+            "file_name": "@pipeline().parameters.fileName"
+          }
+        }
+      }
+    ]
+  }
+}
