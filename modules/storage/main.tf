@@ -129,7 +129,7 @@ resource "azurerm_storage_management_policy" "lifecycle" {
 resource "azurerm_storage_container" "containers" {
   for_each              = toset(["bronze", "silver", "gold", "unity-catalog"])
   name                  = each.value
-  storage_account_name  = azurerm_storage_account.adls.name
+  storage_account_id    = azurerm_storage_account.adls.id
   container_access_type = "private"
 }
 
@@ -194,10 +194,5 @@ resource "azurerm_monitor_diagnostic_setting" "storage" {
 
   enabled_log {
     category = "StorageDelete"
-  }
-
-  metric {
-    category = "Transaction"
-    enabled  = true
   }
 }
