@@ -1,0 +1,22 @@
+{
+  "name": "ds_adls_bronze_binary",
+  "properties": {
+    "linkedServiceName": {
+      "referenceName": "ls_adls_gen2_mi",
+      "type": "LinkedServiceReference"
+    },
+    "parameters": {
+      "folderPath": { "type": "String" },
+      "fileName": { "type": "String" }
+    },
+    "type": "Binary",
+    "typeProperties": {
+      "location": {
+        "type": "AzureBlobFSLocation",
+        "fileSystem": "bronze",
+        "folderPath": "@dataset().folderPath",
+        "fileName": "@dataset().fileName"
+      }
+    }
+  }
+}
